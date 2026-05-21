@@ -1,30 +1,47 @@
 package com.joelnirmal.dme;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.util.Random;
+import java.util.Timer;
+import java.util.TimerTask;
+
+import org.slf4j.LoggerFactory;
 
 /**
- * This class represents a participant in the distributed mutual exclusion (DME) system.
- * Each node can request a token from the Coordinator, enter a critical section, and return the token.
- * Nodes can also request a system shutdown and perform health checks on the Coordinator.
+ * A participant in the distributed mutual exclusion (DME) system.
+ *
+ * <p>Each node can request a token from the Coordinator, enter a critical section,
+ * and return the token. Nodes can also request a system shutdown and perform periodic
+ * health checks against the Coordinator.</p>
  */
 public class Node {
 
+    private static final org.slf4j.Logger log = LoggerFactory.getLogger(Node.class);
+
     private Random ra;
-    private Socket s; // Socket for communication with the Coordinator
-    private PrintWriter pout = null; // Output stream for sending data to the Coordinator
+    private Socket s;
+    private PrintWriter pout = null;
     private ServerSocket n_ss;
     private Socket n_token;
+
     private final String c_host = DmeConfig.getString("coordinator.host");
     private final int c_request_port = DmeConfig.getInt("coordinator.request.port");
     private final int c_return_port = DmeConfig.getInt("coordinator.return.port");
+
     String n_host_name;
     int n_port;
     boolean shutdownRequested;
     private int priorityLevel;
 
-    // Coordinator retry / health check parameters (loaded from application.properties)
+    // Coordinator retry / health-check parameters (loaded from application.properties)
     private static final int MAX_RETRIES = DmeConfig.getInt("node.coordinator.max.retries");
     private static final int RETRY_DELAY = DmeConfig.getInt("node.coordinator.retry.delay.ms");
     private static final int MAX_SHUTDOWN_RETRIES = DmeConfig.getInt("node.coordinator.max.retries");
@@ -46,14 +63,11 @@ public class Node {
     private int coordinatorUnavailableCount = 0;
 
     /**
-     * Constructor for the Node class.
-     * sets up the node with its hostname, port, priority status, and shutdown request status.
-     *
-     * @param nam The hostname of the node.
-     * @param por The port number of the node.
-     * @param sec The maximum delay (in milliseconds) before requesting the token.
-     * @param priorityLevel The priority level of the node (1=high, 2=medium, 3=low).
-     * @param shutdownRequested Whether the node will request a system shutdown.
+     * @param nam node hostname
+     * @param por node port
+     * @param sec maximum delay (ms) before requesting the token
+     * @param priorityLevel priority (1=high, 2=medium, 3=low)
+     * @param shutdownRequested whether this node will request a system shutdown
      */
     public Node(String nam, int por, int sec, int priorityLevel, boolean shutdownRequested) {
         ra = new Random();
@@ -63,107 +77,90 @@ public class Node {
         this.shutdownRequested = shutdownRequested;
 
         String priorityInfo = getPriorityInfo();
-        System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " of dme is active ....");
-        Logger.log("Node-" + n_host_name + ":" + n_port, "Node is active" + priorityInfo);
+        log.info("Node {}:{}{} is active", n_host_name, n_port, priorityInfo);
 
-        // Start periodic health checks for the Coordinator
         startCoordinatorHealthCheck();
 
-        // Main loop for the node's operation
         while (true) {
             try {
-                // Simulate a delay before requesting the token
                 int sleepTime = ra.nextInt(sec * 2);
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " sleeping for " + sleepTime + "ms before requesting token");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Sleeping for " + sleepTime + "ms before requesting token");
+                log.debug("Node {}:{}{} sleeping for {}ms before requesting token",
+                        n_host_name, n_port, priorityInfo, sleepTime);
                 Thread.sleep(sleepTime);
 
-                // Handles the shutdown retries
                 if (shutdownRequested && shutdownRetryCount >= MAX_SHUTDOWN_RETRIES) {
-                    System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo +
-                            " stopping after " + MAX_SHUTDOWN_RETRIES + " shutdown retries");
-                    Logger.log("Node-" + n_host_name + ":" + n_port,
-                            "Stopping after " + MAX_SHUTDOWN_RETRIES + " shutdown retries");
-                    System.exit(0);
+                    log.info("Node {}:{}{} stopping after {} shutdown retries",
+                            n_host_name, n_port, priorityInfo, MAX_SHUTDOWN_RETRIES);
+                    System.exit(0); // refactored in Phase 4
                 }
 
-                // Request the token from the Coordinator
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " requesting token from coordinator");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Requesting token from coordinator" + priorityInfo);
+                log.info("Node {}:{}{} requesting token from coordinator",
+                        n_host_name, n_port, priorityInfo);
 
                 if (!sendTokenRequest(shutdownRequested)) {
-                    continue; // Retry if the request fails
+                    continue;
                 }
 
-                // Reset shutdown request after a successful request
                 if (shutdownRequested) {
                     shutdownRequested = false;
                 }
 
-                // Waits for the token from the Coordinator
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " waiting for token");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Waiting for token");
+                log.debug("Node {}:{}{} waiting for token", n_host_name, n_port, priorityInfo);
 
                 try {
                     n_ss = new ServerSocket(n_port);
-                    n_ss.setSoTimeout(TOKEN_WAIT_TIMEOUT_MS); // Timeout for waiting for the token
+                    n_ss.setSoTimeout(TOKEN_WAIT_TIMEOUT_MS);
 
                     try {
-                        n_token = n_ss.accept(); // Accepts  the token
+                        n_token = n_ss.accept();
                         BufferedReader in = new BufferedReader(new InputStreamReader(n_token.getInputStream()));
                         String tokenMsg = in.readLine();
-
-                        System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " received token: " + tokenMsg);
-                        Logger.log("Node-" + n_host_name + ":" + n_port, "Received token: " + tokenMsg);
+                        log.info("Node {}:{}{} received token: {}",
+                                n_host_name, n_port, priorityInfo, tokenMsg);
                         n_token.close();
                     } catch (SocketTimeoutException e) {
-                        System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " timeout waiting for token. Coordinator could be down.");
-                        Logger.log("Node-" + n_host_name + ":" + n_port, "Timeout waiting for token. Coordinator could be down.");
+                        log.warn("Node {}:{}{} timeout waiting for token — coordinator could be down",
+                                n_host_name, n_port, priorityInfo);
                         n_ss.close();
                         continue;
                     }
 
                     n_ss.close();
                 } catch (IOException e) {
-                    System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " error waiting for token: " + e);
-                    Logger.log("Node-" + n_host_name + ":" + n_port, "Error waiting for token: " + e.getMessage());
+                    log.error("Node {}:{}{} error waiting for token",
+                            n_host_name, n_port, priorityInfo, e);
                     continue;
                 }
 
-                // Enters into the critical section
                 inCriticalSection = true;
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " Entering critical section");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Entering critical section" + priorityInfo);
+                log.info("Node {}:{}{} entering critical section", n_host_name, n_port, priorityInfo);
                 int criticalSectionTime =
                         CRITICAL_SECTION_MIN_MS + ra.nextInt(CRITICAL_SECTION_JITTER_MS);
                 Thread.sleep(criticalSectionTime);
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " Exiting critical section after " + criticalSectionTime + "ms");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Exiting critical section after " + criticalSectionTime + "ms");
+                log.info("Node {}:{}{} exiting critical section after {}ms",
+                        n_host_name, n_port, priorityInfo, criticalSectionTime);
                 inCriticalSection = false;
 
-                // Return the token to the Coordinator
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " returning token to coordinator");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Returning token to coordinator");
+                log.info("Node {}:{}{} returning token to coordinator",
+                        n_host_name, n_port, priorityInfo);
                 if (!returnToken()) {
-                    System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " failed to return token to coordinator after multiple attempts");
-                    Logger.log("Node-" + n_host_name + ":" + n_port, "Failed to return token to coordinator after a few attempts");
+                    log.warn("Node {}:{}{} failed to return token after multiple attempts",
+                            n_host_name, n_port, priorityInfo);
                 }
 
             } catch (InterruptedException e) {
-                System.out.println(e);
-                Logger.log("Node-" + n_host_name + ":" + n_port, "error: " + e.getMessage());
-                System.exit(1);
+                log.error("Node {}:{} interrupted", n_host_name, n_port, e);
+                Thread.currentThread().interrupt();
+                System.exit(1); // refactored in Phase 4
             }
         }
     }
 
     /**
-     * Sends a token request to the Coordinator.
-     * This method attempts to establish a connection with the Coordinator and send the node's details.
-     * If the request includes a shutdown flag, it increments the shutdown retry count.
+     * Sends a token request to the Coordinator. Retries up to {@link #MAX_RETRIES} times.
      *
-     * @param withShutdown Whether the request includes a shutdown flag.
-     * @return True if the request was successfully sent, false otherwise.
+     * @param withShutdown whether to include the shutdown flag in the request
+     * @return true if the request was sent successfully
      */
     private boolean sendTokenRequest(boolean withShutdown) {
         String priorityInfo = getPriorityInfo();
@@ -171,49 +168,36 @@ public class Node {
             try {
                 s = new Socket(c_host, c_request_port);
                 pout = new PrintWriter(s.getOutputStream(), true);
-                
-                // Send the request components in order:
-                // 1. Hostname
                 pout.println(n_host_name);
-                // 2. Port
                 pout.println(n_port);
-                // 3. Priority level (1-3)
                 pout.println(priorityLevel);
-                // 4. Shutdown flag
                 pout.println(withShutdown);
 
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo +
-                        " sending request: NODE=" + n_host_name +
-                        ", PORT=" + n_port +
-                        ", PRIORITY=" + priorityLevel +
-                        ", SHUTDOWN=" + withShutdown);
-                
+                log.debug("Node {}:{}{} sent request (priority={}, shutdown={})",
+                        n_host_name, n_port, priorityInfo, priorityLevel, withShutdown);
+
                 s.close();
                 if (withShutdown) {
                     shutdownRetryCount++;
                     if (shutdownRetryCount >= MAX_SHUTDOWN_RETRIES) {
-                        System.out.println("Node " + n_host_name + ":" + n_port + 
-                                         " initiating system shutdown");
-                        Logger.log("Node-" + n_host_name + ":" + n_port, 
-                                 "Initiating full system shutdown");
-                        System.exit(0); // Terminate the entire JVM
+                        log.info("Node {}:{} initiating full system shutdown", n_host_name, n_port);
+                        System.exit(0); // refactored in Phase 4
                     }
                 }
                 return true;
             } catch (IOException e) {
                 coordinatorUnavailableCount++;
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo +
-                        " failed to connect with the coordinator (" + coordinatorUnavailableCount + 
-                        "/" + MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS + "): " + e);
-                
+                log.warn("Node {}:{}{} failed to connect to coordinator ({}/{}): {}",
+                        n_host_name, n_port, priorityInfo,
+                        coordinatorUnavailableCount, MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS,
+                        e.getMessage());
+
                 if (coordinatorUnavailableCount >= MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS) {
-                    System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + 
-                            " terminating due to coordinator failure");
-                    Logger.log("Node-" + n_host_name + ":" + n_port, 
-                            "Terminating due to coordinator failure");
-                    System.exit(0);
+                    log.error("Node {}:{}{} terminating due to coordinator failure",
+                            n_host_name, n_port, priorityInfo);
+                    System.exit(0); // refactored in Phase 4
                 }
-                
+
                 if (attempt < MAX_RETRIES - 1) {
                     try {
                         Thread.sleep(RETRY_DELAY);
@@ -227,28 +211,19 @@ public class Node {
     }
 
     /**
-     * Returns the token to the Coordinator.
-     * This method attempts to establish a connection with the Coordinator and send a message indicating
-     * that the token is being returned.
-     *
-     * @return True if the token was successfully returned, false otherwise.
+     * Returns the token to the Coordinator. Retries on failure.
      */
     private boolean returnToken() {
         String priorityInfo = getPriorityInfo();
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            try {
-                Socket returnSocket = new Socket(c_host, c_return_port);
-                PrintWriter returnOut = new PrintWriter(returnSocket.getOutputStream(), true);
+            try (Socket returnSocket = new Socket(c_host, c_return_port);
+                 PrintWriter returnOut = new PrintWriter(returnSocket.getOutputStream(), true)) {
                 returnOut.println("TOKEN RETURNED FROM " + n_host_name + ":" + n_port + priorityInfo);
-                returnSocket.close();
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " token returned successfully");
-                Logger.log("Node-" + n_host_name + ":" + n_port, "Token returned successfully");
+                log.info("Node {}:{}{} token returned successfully", n_host_name, n_port, priorityInfo);
                 return true;
             } catch (IOException e) {
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo +
-                        " failed to return token (attempt " + (attempt + 1) + "/" + MAX_RETRIES + "): " + e);
-                Logger.log("Node-" + n_host_name + ":" + n_port,
-                        "Failed to return token (attempt " + (attempt + 1) + "/" + MAX_RETRIES + "): " + e.getMessage());
+                log.warn("Node {}:{}{} failed to return token (attempt {}/{}): {}",
+                        n_host_name, n_port, priorityInfo, attempt + 1, MAX_RETRIES, e.getMessage());
 
                 if (attempt < MAX_RETRIES - 1) {
                     try {
@@ -262,12 +237,8 @@ public class Node {
         return false;
     }
 
-    /**
-     * Starts a periodic health check for the Coordinator.
-     * This method schedules a timer task that periodically checks if the Coordinator is responsive.
-     */
     private void startCoordinatorHealthCheck() {
-        coordinatorCheckTimer = new Timer("CoordinatorChecker");
+        coordinatorCheckTimer = new Timer("CoordinatorChecker", true);
         coordinatorCheckTimer.schedule(new TimerTask() {
             @Override
             public void run() {
@@ -276,91 +247,68 @@ public class Node {
         }, HEALTH_CHECK_INITIAL_DELAY_MS, HEALTH_CHECK_INTERVAL_MS);
     }
 
-    /**
-     * Checks the health of the Coordinator.
-     * This method attempts to establish a connection with the Coordinator to verify its responsiveness.
-     * If the Coordinator is unresponsive, it logs the issue.
-     */
     private void checkCoordinatorHealth() {
         if (inCriticalSection || shutdownRequested) {
             return;
         }
 
         String priorityInfo = getPriorityInfo();
-        try {
-            Socket healthCheckSocket = new Socket();
+        try (Socket healthCheckSocket = new Socket()) {
             healthCheckSocket.connect(new InetSocketAddress(c_host, c_request_port), HEALTH_CHECK_TIMEOUT_MS);
-            healthCheckSocket.close();
-            coordinatorUnavailableCount = 0; // Reset counter if successful
+            coordinatorUnavailableCount = 0;
         } catch (IOException e) {
             coordinatorUnavailableCount++;
-            System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo +
-                    " detected that the coordinator is not responding (" + coordinatorUnavailableCount + 
-                    "/" + MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS + ")");
-            Logger.log("Node-" + n_host_name + ":" + n_port,
-                    "Detected that the coordinator is not responding: " + e.getMessage() + 
-                    " (" + coordinatorUnavailableCount + "/" + MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS + ")");
-            
+            log.warn("Node {}:{}{} detected coordinator unresponsive ({}/{}): {}",
+                    n_host_name, n_port, priorityInfo,
+                    coordinatorUnavailableCount, MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS,
+                    e.getMessage());
+
             if (coordinatorUnavailableCount >= MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS) {
-                System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + 
-                        " terminating due to coordinator failure");
-                Logger.log("Node-" + n_host_name + ":" + n_port, 
-                        "Terminating due to coordinator failure");
-                System.exit(0);
+                log.error("Node {}:{}{} terminating due to coordinator failure",
+                        n_host_name, n_port, priorityInfo);
+                System.exit(0); // refactored in Phase 4
             }
         }
     }
 
     /**
-     * The main method for the Node class.
-     * This method initializes a Node instance with the provided command-line arguments and starts its operation.
-     *
-     * @param args Command-line arguments:
-     *             [0] - Port number for the node.
-     *             [1] - Maximum delay (in milliseconds) before requesting the token.
-     *             [2] - (Optional) Priority level (1=high, 2=medium, 3=low).
-     *             [3] - (Optional) Whether the node will request a system shutdown (true/false).
+     * @param args [0] node port, [1] max delay (ms), [2] priority (1-3, optional),
+     *             [3] whether to request shutdown (true/false, optional)
      */
     public static void main(String args[]) {
         String n_host_name = "";
         int n_port;
         boolean shutdownRequested = false;
 
-        int priorityLevel = 3; // Default to low priority
+        int priorityLevel = 3;
         if (args.length >= 3) {
             priorityLevel = Integer.parseInt(args[2]);
             if (priorityLevel < 1 || priorityLevel > 3) {
-                System.out.println("Priority must be 1 (high), 2 (medium), or 3 (low)");
+                log.error("Priority must be 1 (high), 2 (medium), or 3 (low)");
                 System.exit(1);
             }
-            System.out.println("Node is priority level: " + priorityLevel);
         }
 
         try {
             InetAddress n_inet_address = InetAddress.getLocalHost();
             n_host_name = n_inet_address.getHostName();
-            System.out.println("node hostname is " + n_host_name + ":" + n_inet_address);
         } catch (java.net.UnknownHostException e) {
-            System.out.println(e);
+            log.error("Failed to resolve local host", e);
             System.exit(1);
         }
 
         n_port = Integer.parseInt(args[0]);
-        System.out.println("node port is " + n_port);
 
         if (args.length == 4) {
             shutdownRequested = Boolean.parseBoolean(args[3]);
-            System.out.println("Node will request system shutdown after first token cycle");
         }
 
-        Node n = new Node(n_host_name, n_port, Integer.parseInt(args[1]), priorityLevel, shutdownRequested);
+        log.info("Starting node on {}:{} (priority={}, shutdown={})",
+                n_host_name, n_port, priorityLevel, shutdownRequested);
+
+        new Node(n_host_name, n_port, Integer.parseInt(args[1]), priorityLevel, shutdownRequested);
     }
 
-    /**
-     * Helper method to get the priority level as a human-readable string.
-     *
-     * @return A string representing the priority level.
-     */
     private String getPriorityInfo() {
         switch (priorityLevel) {
             case 1: return " (HIGH PRIORITY)";

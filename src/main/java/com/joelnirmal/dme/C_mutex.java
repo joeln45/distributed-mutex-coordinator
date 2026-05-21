@@ -1,13 +1,22 @@
 package com.joelnirmal.dme;
 
-import java.io.*;
-import java.net.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+
+import org.slf4j.LoggerFactory;
 
 /**
- * This class is responsible for managing token granting and retrieval for nodes.
- * This class also supports graceful shutdown to ensure proper cleanup of resources.
+ * Manages token granting and retrieval for nodes.
+ * Supports graceful shutdown to ensure proper cleanup of resources.
  */
 public class C_mutex extends Thread {
+
+    private static final org.slf4j.Logger log = LoggerFactory.getLogger(C_mutex.class);
+
     C_buffer buffer;
     Socket s;
     int port;
@@ -16,21 +25,13 @@ public class C_mutex extends Thread {
     private ServerSocket ss_back;
     private boolean shutdownRequested = false;
 
-    /**
-     * Constructor for the C_mutex class.
-     * Initializes the mutex handler with a shared buffer and the port number.
-     *
-     * @param b The shared buffer for storing and managing requests.
-     * @param p The port number for the mutex handler.
-     */
     public C_mutex(C_buffer b, int p) {
         buffer = b;
         port = p;
     }
 
     /**
-     * Requests a graceful shutdown of the mutex handler.
-     * This method sets the shutdown flag and closes the server socket to stop waiting for tokens.
+     * Requests a graceful shutdown: closes the return socket and interrupts this thread.
      */
     public synchronized void requestShutdown() {
         shutdownRequested = true;
@@ -39,43 +40,28 @@ public class C_mutex extends Thread {
                 ss_back.close();
             }
         } catch (IOException e) {
-            System.out.println("Exception when closing mutex socket: " + e);
+            log.warn("Exception when closing mutex socket", e);
         }
-        // Interrupt the thread to ensure it terminates
         this.interrupt();
     }
 
-    /**
-     * Checks if a shutdown has been requested.
-     *
-     * @return True if a shutdown has been requested, false otherwise.
-     */
     public synchronized boolean isShutdownRequested() {
         return shutdownRequested;
     }
 
-    /**
-     * The main execution method for the mutex handler thread.
-     * This method listens for token return connections, processes requests from the buffer,
-     * grants tokens to nodes, and waits for the token to be returned.
-     */
+    @Override
     public void run() {
         try {
-            // Create a server socket to listen for token return connections
             int returnPort = DmeConfig.getInt("coordinator.return.port");
             ss_back = new ServerSocket(returnPort);
-            System.out.println("C:mutex   Listening on port " + returnPort + " for token returns");
+            log.info("Listening on port {} for token returns", returnPort);
 
-            // Main loop to process requests and manage tokens
             while (!isShutdownRequested() && !buffer.isShutdownInitiated()) {
                 int bufferSize = buffer.size();
-                System.out.println("C:mutex   Buffer size is " + bufferSize);
-                Logger.log("Coordinator-Mutex", "Queue length: " + bufferSize);
+                log.debug("Queue length: {}", bufferSize);
 
-                // Get the next request from the buffer
                 RequestItem request = buffer.getNext();
 
-                // If the buffer is empty and shutdown is initiated, exit the loop
                 if (request == null && buffer.isShutdownInitiated()) {
                     break;
                 }
@@ -84,75 +70,66 @@ public class C_mutex extends Thread {
                     n_host = request.getHost();
                     n_port = Integer.parseInt(request.getPort());
                     int priority = request.getPriorityLevel();
+                    String priorityInfo = priorityLabel(priority);
 
-                    String priorityInfo;
-                    switch (priority) {
-                        case 1: priorityInfo = " (HIGH PRIORITY)"; break;
-                        case 2: priorityInfo = " (MEDIUM PRIORITY)"; break;
-                        case 3: priorityInfo = " (LOW PRIORITY)"; break;
-                        default: priorityInfo = " (UNKNOWN PRIORITY)";
-                    }
-                    System.out.println("C:mutex   Granting token to " + n_host + ":" + n_port + priorityInfo);
-                    Logger.log("Coordinator-Mutex", "Granting token to " + n_host + ":" + n_port + priorityInfo);
+                    log.info("Granting token to {}:{}{}", n_host, n_port, priorityInfo);
 
-                    // Grant the token to the requesting node
-                    try {
-                        Socket tokenSocket = new Socket(n_host, n_port);
-                        PrintWriter out = new PrintWriter(tokenSocket.getOutputStream(), true);
-                        out.println("TOKEN"); // Send the token as a simple message
-                        System.out.println("C:mutex   Token granted to " + n_host + ":" + n_port + priorityInfo);
-                        Logger.log("Coordinator-Mutex", "Token granted to " + n_host + ":" + n_port + priorityInfo);
-                        tokenSocket.close();
+                    try (Socket tokenSocket = new Socket(n_host, n_port);
+                         PrintWriter out = new PrintWriter(tokenSocket.getOutputStream(), true)) {
+                        out.println("TOKEN");
+                        log.info("Token granted to {}:{}{}", n_host, n_port, priorityInfo);
                     } catch (IOException e) {
-                        System.out.println("CRASH Mutex connecting to the node for granting the TOKEN: " + e);
-                        Logger.log("Coordinator-Mutex", "error: Failed to grant token to " + n_host + ":" + n_port + " - " + e.getMessage());
+                        log.error("Failed to grant token to {}:{} - {}", n_host, n_port, e.getMessage());
                     }
 
-                    // Wait for the token to be returned
                     try {
-                        Socket returnSocket = ss_back.accept(); // Blocking call to wait for the token
-                        BufferedReader in = new BufferedReader(new InputStreamReader(returnSocket.getInputStream()));
-                        String message = in.readLine(); // Optional confirmation message
-                        System.out.println("C:mutex   Token returned from " + n_host + ":" + n_port + priorityInfo + " with message: " + message);
-                        Logger.log("Coordinator-Mutex", "Token returned from " + n_host + ":" + n_port + priorityInfo + " with message: " + message);
+                        Socket returnSocket = ss_back.accept();
+                        try (BufferedReader in = new BufferedReader(new InputStreamReader(returnSocket.getInputStream()))) {
+                            String message = in.readLine();
+                            log.info("Token returned from {}:{}{} with message: {}",
+                                    n_host, n_port, priorityInfo, message);
+                        }
                         returnSocket.close();
                     } catch (IOException e) {
                         if (!isShutdownRequested()) {
-                            System.out.println("CRASH Mutex waiting for the TOKEN back: " + e);
-                            Logger.log("Coordinator-Mutex", "error: Failed to receive token back from " + n_host + ":" + n_port + " - " + e.getMessage());
+                            log.error("Failed to receive token back from {}:{} - {}",
+                                    n_host, n_port, e.getMessage());
                         }
                     }
                 }
             }
 
-            // Perform cleanup and shutdown the mutex handler
-            System.out.println("C:mutex   Shutting down mutex handler");
-            Logger.log("Coordinator-Mutex", "Shutting down mutex handler");
+            log.info("Shutting down mutex handler");
             try {
                 if (ss_back != null && !ss_back.isClosed()) {
                     ss_back.close();
                 }
             } catch (IOException e) {
-                System.out.println("Exception when closing mutex socket: " + e);
+                log.warn("Exception when closing mutex socket", e);
             }
         } catch (Exception e) {
             if (!isShutdownRequested()) {
-                System.out.println("FATAL ERROR: " + e);
-                Logger.log("Coordinator-Mutex", "error: " + e.getMessage());
-                e.printStackTrace();
+                log.error("Fatal error in mutex thread", e);
             }
         } finally {
-            System.out.println("C:mutex   Shutting down the mutex ");
-            Logger.log("Coordinator-Mutex", "Shutting down mutex ");
+            log.info("Mutex thread terminating");
             try {
                 if (ss_back != null && !ss_back.isClosed()) {
                     ss_back.close();
-                    Logger.log("Coordinator-Mutex", "Closed server socket");
+                    log.debug("Closed server socket");
                 }
             } catch (IOException e) {
-                System.out.println("Exception when closing mutex socket: " + e);
-                Logger.log("Coordinator-Mutex", "Error closing socket: " + e.getMessage());
+                log.warn("Error closing mutex socket", e);
             }
+        }
+    }
+
+    private static String priorityLabel(int level) {
+        switch (level) {
+            case 1: return " (HIGH PRIORITY)";
+            case 2: return " (MEDIUM PRIORITY)";
+            case 3: return " (LOW PRIORITY)";
+            default: return " (UNKNOWN PRIORITY)";
         }
     }
 }

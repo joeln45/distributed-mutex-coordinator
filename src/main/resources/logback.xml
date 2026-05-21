@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for the Distributed Mutex Coordinator.
+
+  Two appenders:
+    * CONSOLE  — human-readable lines on stdout for local development.
+    * FILE     — rolling file under ./logs/ that survives coordinator restarts
+                 (fixing the limitation noted in the original report where
+                 Output.txt was cleared on every startup).
+
+  Log level can be tuned at the bottom — DEBUG during development, INFO in
+  production. No code changes needed.
+-->
+<configuration>
+
+    <!-- ============== Appender: CONSOLE ============== -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============== Appender: rolling FILE ============== -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/dme.log</file>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+        <!-- Roll the log daily, and also when it exceeds 10 MB. Keep 30 days. -->
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/dme.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ============== Root logger ============== -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+    <!-- Our own package gets DEBUG during development. Bump to INFO for prod. -->
+    <logger name="com.joelnirmal.dme" level="DEBUG"/>
+
+</configuration>
