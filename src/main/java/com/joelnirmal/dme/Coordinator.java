@@ -45,24 +45,48 @@ public class Coordinator {
 
         log.info("Coordinator started and running on port {}", port);
 
-        // Add a shutdown hook to handle graceful shutdown of the Coordinator
-        Runtime.getRuntime().addShutdownHook(new Thread() {
-            public void run() {
-                log.info("Shutting down coordinator");
-
-                receiver.requestShutdown();
-                mutex.requestShutdown();
-
-                try {
-                    receiver.join();
-                    mutex.join();
-                } catch (InterruptedException e) {
-                    log.warn("Interrupted while waiting for threads to finish");
-                    Thread.currentThread().interrupt();
-                }
-
-                log.info("Coordinator shutdown completed");
+        // Fallback shutdown hook for Ctrl+C / kill — those bypass the cooperative
+        // path below, so we still need a way to release sockets cleanly.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            log.info("Shutdown hook invoked — stopping coordinator");
+            receiver.requestShutdown();
+            mutex.requestShutdown();
+            try {
+                receiver.join();
+                mutex.join();
+            } catch (InterruptedException e) {
+                log.warn("Interrupted while waiting for threads to finish");
+                Thread.currentThread().interrupt();
             }
-        });
+            log.info("Coordinator shutdown completed");
+        }, "CoordinatorShutdownHook"));
+
+        // Cooperative path: block until a node requests shutdown via the buffer,
+        // then bring down the worker threads. After this method returns, the JVM
+        // exits naturally because no non-daemon threads remain running.
+        synchronized (buffer) {
+            while (!buffer.isShutdownInitiated()) {
+                try {
+                    buffer.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+
+        log.info("Buffer shutdown signal received — stopping worker threads");
+        receiver.requestShutdown();
+        mutex.requestShutdown();
+
+        try {
+            receiver.join();
+            mutex.join();
+        } catch (InterruptedException e) {
+            log.warn("Interrupted while waiting for worker threads");
+            Thread.currentThread().interrupt();
+        }
+
+        log.info("Coordinator main thread exiting");
     }
 }

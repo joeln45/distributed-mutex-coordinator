@@ -61,13 +61,14 @@ public class C_Connection_r extends Thread {
 
             if (Boolean.parseBoolean(request[SHUTDOWN])) {
                 log.info("Received SHUTDOWN request from {}:{}", request[NODE], request[PORT]);
-                buffer.initiateShutdown();
 
                 PrintWriter out = new PrintWriter(s.getOutputStream(), true);
                 out.println("SHUTDOWN");
                 s.close();
 
-                System.exit(0); // refactored in Phase 4 into cooperative shutdown
+                // Cooperative shutdown: signal buffer; Coordinator.main watches this flag
+                // and stops the receiver/mutex threads, allowing the JVM to exit naturally.
+                buffer.initiateShutdown();
                 return;
             }
 

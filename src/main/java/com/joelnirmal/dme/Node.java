@@ -61,6 +61,7 @@ public class Node {
     private Timer coordinatorCheckTimer;
     private int shutdownRetryCount = 0;
     private int coordinatorUnavailableCount = 0;
+    private volatile boolean running = true;
 
     /**
      * @param nam node hostname
@@ -79,9 +80,11 @@ public class Node {
         String priorityInfo = getPriorityInfo();
         log.info("Node {}:{}{} is active", n_host_name, n_port, priorityInfo);
 
+        Runtime.getRuntime().addShutdownHook(new Thread(this::stopGracefully, "NodeShutdownHook"));
+
         startCoordinatorHealthCheck();
 
-        while (true) {
+        while (running) {
             try {
                 int sleepTime = ra.nextInt(sec * 2);
                 log.debug("Node {}:{}{} sleeping for {}ms before requesting token",
@@ -91,7 +94,8 @@ public class Node {
                 if (shutdownRequested && shutdownRetryCount >= MAX_SHUTDOWN_RETRIES) {
                     log.info("Node {}:{}{} stopping after {} shutdown retries",
                             n_host_name, n_port, priorityInfo, MAX_SHUTDOWN_RETRIES);
-                    System.exit(0); // refactored in Phase 4
+                    stopGracefully();
+                    return;
                 }
 
                 log.info("Node {}:{}{} requesting token from coordinator",
@@ -149,10 +153,25 @@ public class Node {
                 }
 
             } catch (InterruptedException e) {
-                log.error("Node {}:{} interrupted", n_host_name, n_port, e);
+                log.info("Node {}:{} interrupted — shutting down", n_host_name, n_port);
                 Thread.currentThread().interrupt();
-                System.exit(1); // refactored in Phase 4
+                stopGracefully();
+                return;
             }
+        }
+
+        log.info("Node {}:{}{} main loop exited", n_host_name, n_port, priorityInfo);
+    }
+
+    /**
+     * Signals the main loop to exit on its next iteration and cancels the health-check timer.
+     * Safe to call from any thread (including a JVM shutdown hook).
+     */
+    private void stopGracefully() {
+        if (!running) return;
+        running = false;
+        if (coordinatorCheckTimer != null) {
+            coordinatorCheckTimer.cancel();
         }
     }
 
@@ -181,7 +200,7 @@ public class Node {
                     shutdownRetryCount++;
                     if (shutdownRetryCount >= MAX_SHUTDOWN_RETRIES) {
                         log.info("Node {}:{} initiating full system shutdown", n_host_name, n_port);
-                        System.exit(0); // refactored in Phase 4
+                        stopGracefully();
                     }
                 }
                 return true;
@@ -195,7 +214,8 @@ public class Node {
                 if (coordinatorUnavailableCount >= MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS) {
                     log.error("Node {}:{}{} terminating due to coordinator failure",
                             n_host_name, n_port, priorityInfo);
-                    System.exit(0); // refactored in Phase 4
+                    stopGracefully();
+                    return false;
                 }
 
                 if (attempt < MAX_RETRIES - 1) {
@@ -266,7 +286,7 @@ public class Node {
             if (coordinatorUnavailableCount >= MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS) {
                 log.error("Node {}:{}{} terminating due to coordinator failure",
                         n_host_name, n_port, priorityInfo);
-                System.exit(0); // refactored in Phase 4
+                stopGracefully();
             }
         }
     }
@@ -284,8 +304,8 @@ public class Node {
         if (args.length >= 3) {
             priorityLevel = Integer.parseInt(args[2]);
             if (priorityLevel < 1 || priorityLevel > 3) {
-                log.error("Priority must be 1 (high), 2 (medium), or 3 (low)");
-                System.exit(1);
+                throw new IllegalArgumentException(
+                        "Priority must be 1 (high), 2 (medium), or 3 (low); got " + priorityLevel);
             }
         }
 
@@ -293,8 +313,7 @@ public class Node {
             InetAddress n_inet_address = InetAddress.getLocalHost();
             n_host_name = n_inet_address.getHostName();
         } catch (java.net.UnknownHostException e) {
-            log.error("Failed to resolve local host", e);
-            System.exit(1);
+            throw new IllegalStateException("Failed to resolve local host", e);
         }
 
         n_port = Integer.parseInt(args[0]);
