@@ -5,35 +5,44 @@ import java.net.*;
 import java.util.*;
 
 /**
- * Thisclass represents a participant in the distributed mutual exclusion (DME) system.
+ * This class represents a participant in the distributed mutual exclusion (DME) system.
  * Each node can request a token from the Coordinator, enter a critical section, and return the token.
  * Nodes can also request a system shutdown and perform health checks on the Coordinator.
  */
 public class Node {
 
-    private Random ra;  
+    private Random ra;
     private Socket s; // Socket for communication with the Coordinator
     private PrintWriter pout = null; // Output stream for sending data to the Coordinator
-    private ServerSocket n_ss;  
-    private Socket n_token;  
-    String c_host = "127.0.0.1";  
-    int c_request_port = 7000; // Port for sending token requests to the Coordinator
-    int c_return_port = 7001; // Port for returning the token to the Coordinator
-    String n_host = "127.0.0.1";  
-    String n_host_name; 
-    int n_port; 
-    boolean isPriority;  
-    boolean shutdownRequested;  
-    private int priorityLevel; 
+    private ServerSocket n_ss;
+    private Socket n_token;
+    private final String c_host = DmeConfig.getString("coordinator.host");
+    private final int c_request_port = DmeConfig.getInt("coordinator.request.port");
+    private final int c_return_port = DmeConfig.getInt("coordinator.return.port");
+    String n_host_name;
+    int n_port;
+    boolean shutdownRequested;
+    private int priorityLevel;
 
-    // Coordinator's health check parameters
-    private static final int MAX_RETRIES = 3; // Maximum retries for communication
-    private static final int RETRY_DELAY = 5000; // Delay between retries (in milliseconds)
-    private static final int MAX_SHUTDOWN_RETRIES = 3;  
-    private boolean inCriticalSection = false;  
-    private Timer coordinatorCheckTimer;  
-    private int shutdownRetryCount = 0;  
-    private static final int MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS = 3;
+    // Coordinator retry / health check parameters (loaded from application.properties)
+    private static final int MAX_RETRIES = DmeConfig.getInt("node.coordinator.max.retries");
+    private static final int RETRY_DELAY = DmeConfig.getInt("node.coordinator.retry.delay.ms");
+    private static final int MAX_SHUTDOWN_RETRIES = DmeConfig.getInt("node.coordinator.max.retries");
+    private static final int MAX_COORDINATOR_UNAVAILABLE_ATTEMPTS =
+            DmeConfig.getInt("node.coordinator.max.unavailable");
+    private static final int TOKEN_WAIT_TIMEOUT_MS = DmeConfig.getInt("node.token.wait.timeout.ms");
+    private static final int CRITICAL_SECTION_MIN_MS = DmeConfig.getInt("node.critical-section.min.ms");
+    private static final int CRITICAL_SECTION_JITTER_MS = DmeConfig.getInt("node.critical-section.jitter.ms");
+    private static final int HEALTH_CHECK_INITIAL_DELAY_MS =
+            DmeConfig.getInt("node.coordinator.health.check.initial.delay.ms");
+    private static final int HEALTH_CHECK_INTERVAL_MS =
+            DmeConfig.getInt("node.coordinator.health.check.interval.ms");
+    private static final int HEALTH_CHECK_TIMEOUT_MS =
+            DmeConfig.getInt("node.coordinator.health.check.timeout.ms");
+
+    private boolean inCriticalSection = false;
+    private Timer coordinatorCheckTimer;
+    private int shutdownRetryCount = 0;
     private int coordinatorUnavailableCount = 0;
 
     /**
@@ -97,7 +106,7 @@ public class Node {
 
                 try {
                     n_ss = new ServerSocket(n_port);
-                    n_ss.setSoTimeout(30000); // Timeout for waiting for the token
+                    n_ss.setSoTimeout(TOKEN_WAIT_TIMEOUT_MS); // Timeout for waiting for the token
 
                     try {
                         n_token = n_ss.accept(); // Accepts  the token
@@ -125,7 +134,8 @@ public class Node {
                 inCriticalSection = true;
                 System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " Entering critical section");
                 Logger.log("Node-" + n_host_name + ":" + n_port, "Entering critical section" + priorityInfo);
-                int criticalSectionTime = 3000 + ra.nextInt(2000); // Simulate time spent in the critical section
+                int criticalSectionTime =
+                        CRITICAL_SECTION_MIN_MS + ra.nextInt(CRITICAL_SECTION_JITTER_MS);
                 Thread.sleep(criticalSectionTime);
                 System.out.println("Node " + n_host_name + ":" + n_port + priorityInfo + " Exiting critical section after " + criticalSectionTime + "ms");
                 Logger.log("Node-" + n_host_name + ":" + n_port, "Exiting critical section after " + criticalSectionTime + "ms");
@@ -224,7 +234,7 @@ public class Node {
      * @return True if the token was successfully returned, false otherwise.
      */
     private boolean returnToken() {
-        String priorityInfo = isPriority ? " (PRIORITY)" : "";
+        String priorityInfo = getPriorityInfo();
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
             try {
                 Socket returnSocket = new Socket(c_host, c_return_port);
@@ -263,7 +273,7 @@ public class Node {
             public void run() {
                 checkCoordinatorHealth();
             }
-        }, 10000, 30000);
+        }, HEALTH_CHECK_INITIAL_DELAY_MS, HEALTH_CHECK_INTERVAL_MS);
     }
 
     /**
@@ -279,7 +289,7 @@ public class Node {
         String priorityInfo = getPriorityInfo();
         try {
             Socket healthCheckSocket = new Socket();
-            healthCheckSocket.connect(new InetSocketAddress(c_host, c_request_port), 2000);
+            healthCheckSocket.connect(new InetSocketAddress(c_host, c_request_port), HEALTH_CHECK_TIMEOUT_MS);
             healthCheckSocket.close();
             coordinatorUnavailableCount = 0; // Reset counter if successful
         } catch (IOException e) {
@@ -314,7 +324,6 @@ public class Node {
     public static void main(String args[]) {
         String n_host_name = "";
         int n_port;
-        boolean isPriority = false;
         boolean shutdownRequested = false;
 
         int priorityLevel = 3; // Default to low priority
@@ -338,11 +347,6 @@ public class Node {
 
         n_port = Integer.parseInt(args[0]);
         System.out.println("node port is " + n_port);
-
-        if (args.length >= 3) {
-            isPriority = Boolean.parseBoolean(args[2]);
-            System.out.println("Node is " + (isPriority ? "PRIORITY" : "normal") + " node");
-        }
 
         if (args.length == 4) {
             shutdownRequested = Boolean.parseBoolean(args[3]);

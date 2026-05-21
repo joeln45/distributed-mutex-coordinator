@@ -8,7 +8,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 
 /**
- * Thisr class provides utility methods for logging messages to a file.
+ * This class provides utility methods for logging messages to a file.
  * It supports appending log entries with timestamps and clearing the log file.
  * The log file is named "Output.txt" and is located in the application's working directory.
  */

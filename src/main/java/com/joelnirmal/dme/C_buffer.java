@@ -9,7 +9,8 @@ import java.util.*;
 public class C_buffer {
 
     private List<RequestItem> data; // Stores token requests
-    private long lowPriorityWaitThreshold = 10000; // Anti-starvation threshold (10 seconds)
+    private final long lowPriorityWaitThreshold =
+            DmeConfig.getLong("coordinator.anti-starvation.threshold.ms");
     private boolean shutdownInitiated = false; // Indicates if shutdown has been initiated
 
     /**
@@ -127,20 +128,6 @@ public class C_buffer {
             System.out.print(" " + item + " ");
         }
         System.out.println(" ");
-    }
-
-    /**
-     * Adds a new request item to the buffer.
-     * This method sorts the buffer after adding the item and notifies waiting threads.
-     *
-     * @param item The RequestItem to be added to the buffer.
-     */
-    public void add(RequestItem item) {
-        data.add(item);
-        sortWithAntiStarvation();
-        synchronized (this) {
-            notifyAll();
-        }
     }
 
     /**

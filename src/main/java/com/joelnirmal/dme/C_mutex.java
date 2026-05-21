@@ -8,14 +8,13 @@ import java.net.*;
  * This class also supports graceful shutdown to ensure proper cleanup of resources.
  */
 public class C_mutex extends Thread {
-    C_buffer buffer; 
+    C_buffer buffer;
     Socket s;
-    int port; 
+    int port;
     String n_host;
-    int n_port; 
-    boolean n_priority; 
+    int n_port;
     private ServerSocket ss_back;
-    private boolean shutdownRequested = false; 
+    private boolean shutdownRequested = false;
 
     /**
      * Constructor for the C_mutex class.
@@ -63,8 +62,9 @@ public class C_mutex extends Thread {
     public void run() {
         try {
             // Create a server socket to listen for token return connections
-            ss_back = new ServerSocket(7001);
-            System.out.println("C:mutex   Listening on port 7001 for token returns");
+            int returnPort = DmeConfig.getInt("coordinator.return.port");
+            ss_back = new ServerSocket(returnPort);
+            System.out.println("C:mutex   Listening on port " + returnPort + " for token returns");
 
             // Main loop to process requests and manage tokens
             while (!isShutdownRequested() && !buffer.isShutdownInitiated()) {

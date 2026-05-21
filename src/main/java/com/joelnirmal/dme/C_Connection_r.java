@@ -43,7 +43,7 @@ public class C_Connection_r extends Thread {
             // Initialize input streams for reading data from the socket
             in = s.getInputStream();
             bin = new BufferedReader(new InputStreamReader(in));
-            s.setSoTimeout(5000); // Set a timeout for reading data
+            s.setSoTimeout(DmeConfig.getInt("coordinator.connection.read.timeout.ms"));
 
             // Read all parts of the request (hostname, port, priority, shutdown flag)
             for (int i = 0; i < 4; i++) {

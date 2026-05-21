@@ -1,7 +1,7 @@
 package com.joelnirmal.dme;
 
 /**
- * Thhis class represents a request in the distributed mutual exclusion system.
+ * This class represents a request in the distributed mutual exclusion system.
  * Each request contains information about the requesting node, its priority, and the time it was created.
  * This class is used to manage and prioritize requests in the Coordinator's buffer.
  */

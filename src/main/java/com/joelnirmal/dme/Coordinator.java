@@ -16,7 +16,7 @@ public class Coordinator {
     public static void main(String args[]) {
         // Clear the log file at the start of the program
         Logger.clearLog();
-        int port = 7000; // Default port for the Coordinator
+        int port = DmeConfig.getInt("coordinator.request.port");
 
         // Create an instance of the Coordinator
         Coordinator c = new Coordinator();
